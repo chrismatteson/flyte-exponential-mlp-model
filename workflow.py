@@ -1,31 +1,88 @@
-from flytekit import workflow, task, Resources, ImageSpec, map_task
+from flytekit import workflow, task, Resources, ImageSpec, map_task, current_context
 from flytekit.types.file import FlyteFile
 from flytekit.types.schema import FlyteSchema
+from union import ActorEnvironment
+import union
+from flytekitplugins.deck.renderer import ImageRenderer, MarkdownRenderer
 import pandas as pd
+
+class ResponsiveImageRenderer(ImageRenderer):
+    """Enhanced ImageRenderer that creates responsive images that auto-resize to page width"""
+    
+    @staticmethod
+    def _image_to_html_string(img: "PIL.Image.Image") -> str:
+        import base64
+        from io import BytesIO
+
+        buffered = BytesIO()
+        img.save(buffered, format="PNG")
+        img_base64 = base64.b64encode(buffered.getvalue()).decode()
+        
+        # Enhanced HTML with responsive CSS styling
+        return f"""
+        <div style="width: 100%; text-align: center; margin: 20px 0;">
+            <img src="data:image/png;base64,{img_base64}" 
+                 alt="Rendered Image"
+                 style="max-width: 100%; 
+                        height: auto; 
+                        border: 1px solid #ddd; 
+                        border-radius: 8px; 
+                        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+                        background: white;
+                        display: block;
+                        margin: 0 auto;">
+        </div>
+        """
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.neural_network import MLPRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, r2_score
 import joblib
-from typing import Tuple, List, Dict, Any
+from typing import Tuple, List, Dict, Any, Union
+from dataclasses import dataclass
 import json
 import os
+
+@dataclass
+class DataMetadata:
+    x_min: int
+    x_max: int  
+    error: float
+    a: float
+    b: float
+    c: float
+    num_points: int
+    formula: str
 
 # Grid search for hyperparameter optimization
 # Note: This is a custom grid search implementation, not using Optuna
 
 image_spec = ImageSpec(
-    name="mlp-training-workflow",
     builder="union",
     registry=os.environ.get("IMAGE_SPEC_REGISTRY"),
-    requirements="requirements.txt"
+    packages=[
+        "pandas>=2.0.0",
+        "numpy>=1.24.0",
+        "matplotlib>=3.7.0",
+        "scikit-learn>=1.3.0",
+        "joblib>=1.3.0",
+        "flytekitplugins-deck-standard",
+        "markdown"
+    ],
 )
 
-@task(
+actor = ActorEnvironment(
+    name="actor",
+    ttl_seconds=30,
     container_image=image_spec,
     requests=Resources(cpu="1", mem="2Gi"),
     limits=Resources(cpu="1", mem="2Gi")
+)
+
+@actor.task(
+    cache=True,  # Cache data generation since it's deterministic
+    cache_version="1.5"
 )
 def generate_data(
     x_min: int = 0,
@@ -34,7 +91,7 @@ def generate_data(
     a: float = 1.0,
     b: float = 2.0,
     c: float = 1.0
-) -> Tuple[FlyteFile, Dict[str, Any]]:
+) -> Tuple[FlyteFile, DataMetadata]:
     """
     Generate synthetic data using the formula y = ax^2 + bx + c
     
@@ -74,31 +131,29 @@ def generate_data(
         'y': y_values
     })
     
-    # Save to file
-    output_path = "./tmp/generated_data.csv"
-    df.to_csv(output_path, index=False)
+    # Save to file in working directory (Union will handle persistence)
+    local_path = os.path.join(current_context().working_directory, "generated_data.csv")
+    df.to_csv(local_path, index=False)
     
     # Create metadata
-    metadata = {
-        'x_min': x_min,
-        'x_max': x_max,
-        'error': error,
-        'a': a,
-        'b': b,
-        'c': c,
-        'num_points': len(x_values),
-        'formula': f"y = {a}x^2 + {b}x + {c}"
-    }
+    metadata = DataMetadata(
+        x_min=x_min,
+        x_max=x_max,
+        error=error,
+        a=a,
+        b=b,
+        c=c,
+        num_points=len(x_values),
+        formula=f"y = {a}x^2 + {b}x + {c}"
+    )
     
-    return FlyteFile(output_path), metadata
+    return FlyteFile(path=local_path), metadata
 
 
-@task(
-    container_image=image_spec,
-    requests=Resources(cpu="1", mem="2Gi"),
-    limits=Resources(cpu="1", mem="2Gi")
+@actor.task(
+    enable_deck=True
 )
-def visualize_data(data_file: FlyteFile, metadata: Dict[str, Any]) -> FlyteFile:
+def visualize_data(data_file: FlyteFile, metadata: DataMetadata) -> FlyteFile:
     """
     Create visualizations of the generated dataset
     
@@ -113,8 +168,8 @@ def visualize_data(data_file: FlyteFile, metadata: Dict[str, Any]) -> FlyteFile:
     df = pd.read_csv(data_file)
     
     # Create figure with subplots
-    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-    fig.suptitle(f'Dataset Visualization\nFormula: {metadata["formula"]}', fontsize=16)
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+    fig.suptitle(f'Dataset Visualization\nFormula: {metadata.formula}', fontsize=16)
     
     # Scatter plot
     axes[0, 0].scatter(df['x'], df['y'], alpha=0.7, color='blue')
@@ -143,21 +198,49 @@ def visualize_data(data_file: FlyteFile, metadata: Dict[str, Any]) -> FlyteFile:
     
     plt.tight_layout()
     
-    # Save plot
-    output_path = "./tmp/data_visualization.png"
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    # Save plot in working directory (Union will handle persistence)
+    local_path = os.path.join(current_context().working_directory, "data_visualization.png")
+    plt.savefig(local_path, dpi=300, bbox_inches='tight')
+    
+    # Create a deck to display the visualization in Union UI
+    viz_deck = union.Deck("Data Visualization Dashboard")
+    
+    # Add markdown description
+    description = f"""
+# Dataset Visualization Report
+
+**Formula:** {metadata.formula}
+
+**Dataset Summary:**
+- **Data Range:** x ∈ [{metadata.x_min}, {metadata.x_max}]
+- **Number of Points:** {metadata.num_points}
+- **Error Added:** {metadata.error}%
+- **Coefficients:** a={metadata.a}, b={metadata.b}, c={metadata.c}
+
+## Visualization Details
+The plots below show:
+1. **Scatter Plot:** Individual data points
+2. **Line Plot:** Connected data points showing the curve
+3. **X Distribution:** Histogram of input values
+4. **Y Distribution:** Histogram of output values
+"""
+    
+    viz_deck.append(MarkdownRenderer().to_html(description))
+    viz_deck.append(ResponsiveImageRenderer().to_html(image_src=FlyteFile(path=local_path)))
+    
     plt.close()
     
-    return FlyteFile(output_path)
+    return FlyteFile(path=local_path)
 
 
-@task(
-    requests=Resources(cpu="2", mem="4Gi"),
-    limits=Resources(cpu="2", mem="4Gi")
+@actor.task(
+
+    # Note: Training is NOT cached by default since hyperparameters may vary
+    # Add cache=True for production models with stable hyperparameters
 )
 def train_mlp_model(
     data_file: FlyteFile,
-    metadata: Dict[str, Any],
+    metadata: DataMetadata,
     hidden_layers: List[int] = [256, 128, 64, 32, 16],
     test_size: float = 0.2,
     random_state: int = 42,
@@ -323,7 +406,7 @@ def train_mlp_model(
         'use_output_scaling': use_output_scaling
     }
     
-    model_path = "./tmp/mlp_model.joblib"
+    model_path = os.path.join(current_context().working_directory, "mlp_model.joblib")
     joblib.dump(model_data, model_path)
     
     # Calculate total parameters (rough estimate for MLP)
@@ -351,16 +434,16 @@ def train_mlp_model(
         'final_loss': float(model.loss_) if hasattr(model, 'loss_') else 'Unknown',
         'convergence_achieved': model.n_iter_ < 5000,
         # Include original data generation metadata
-        'a': metadata.get('a', 1.0),
-        'b': metadata.get('b', 2.0),
-        'c': metadata.get('c', 1.0),
-        'formula': metadata.get('formula', 'y = x² + 2x + 1'),
-        'x_min': metadata.get('x_min', 0),
-        'x_max': metadata.get('x_max', 100),
-        'error': metadata.get('error', 0.0)
+        'a': metadata.a,
+        'b': metadata.b,
+        'c': metadata.c,
+        'formula': metadata.formula,
+        'x_min': metadata.x_min,
+        'x_max': metadata.x_max,
+        'error': metadata.error
     }
     
-    metrics_path = "./tmp/training_metrics.json"
+    metrics_path = os.path.join(current_context().working_directory, "training_metrics.json")
     with open(metrics_path, 'w') as f:
         json.dump(metrics, f, indent=2)
     
@@ -369,12 +452,11 @@ def train_mlp_model(
     print(f"   Test R²:  {test_r2:.6f}")
     print(f"   Total Parameters: {total_params:,}")
     
-    return FlyteFile(model_path), FlyteFile(metrics_path), metrics
+    return FlyteFile(path=model_path), FlyteFile(path=metrics_path), metrics
 
 
-@task(
-    requests=Resources(cpu="1", mem="2Gi"),
-    limits=Resources(cpu="1", mem="2Gi")
+@actor.task(
+    enable_deck=True
 )
 def validate_model(
     model_file: FlyteFile,
@@ -458,8 +540,97 @@ def validate_model(
         'r2_percentage': float(full_r2 * 100)
     }
     
+    # Create validation visualizations
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+    fig.suptitle('🚀 Model Validation Dashboard', fontsize=16, fontweight='bold')
+    
+    # 1. Predictions vs Actual scatter plot
+    axes[0, 0].scatter(y, y_pred, alpha=0.7, color='blue', s=50)
+    axes[0, 0].plot([y.min(), y.max()], [y.min(), y.max()], 'r--', lw=2, label='Perfect Prediction')
+    axes[0, 0].set_xlabel('Actual Values')
+    axes[0, 0].set_ylabel('Predicted Values')
+    axes[0, 0].set_title(f'Predictions vs Actual (R² = {full_r2:.4f})')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    # 2. Residuals plot
+    axes[0, 1].scatter(y_pred, residuals, alpha=0.7, color='green', s=50)
+    axes[0, 1].axhline(y=0, color='r', linestyle='--', lw=2)
+    axes[0, 1].set_xlabel('Predicted Values')
+    axes[0, 1].set_ylabel('Residuals')
+    axes[0, 1].set_title('Residual Analysis')
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # 3. Residuals histogram
+    axes[1, 0].hist(residuals, bins=20, alpha=0.7, color='orange', edgecolor='black')
+    axes[1, 0].set_xlabel('Residuals')
+    axes[1, 0].set_ylabel('Frequency')
+    axes[1, 0].set_title('Residuals Distribution')
+    axes[1, 0].axvline(x=0, color='r', linestyle='--', lw=2)
+    
+    # 4. Model performance metrics visualization
+    metrics_names = ['Train R²', 'Test R²', 'Full R²']
+    metrics_values = [training_metrics['train_r2'], training_metrics['test_r2'], full_r2]
+    colors = ['lightblue', 'lightgreen', 'lightcoral']
+    
+    bars = axes[1, 1].bar(metrics_names, metrics_values, color=colors, alpha=0.8, edgecolor='black')
+    axes[1, 1].set_ylabel('R² Score')
+    axes[1, 1].set_title('Model Performance Comparison')
+    axes[1, 1].set_ylim(0, 1)
+    axes[1, 1].grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels on bars
+    for bar, value in zip(bars, metrics_values):
+        height = bar.get_height()
+        axes[1, 1].text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                       f'{value:.4f}', ha='center', va='bottom', fontweight='bold')
+    
+    plt.tight_layout()
+    
+    # Save validation visualization
+    validation_plot_path = os.path.join(current_context().working_directory, "validation_dashboard.png")
+    plt.savefig(validation_plot_path, dpi=300, bbox_inches='tight')
+    
+    # Create validation deck
+    validation_deck = union.Deck("Model Validation Report")
+    
+    # Add validation summary
+    validation_summary = f"""
+# 🎯 Model Validation Results
+
+## 🏆 Performance Summary
+- **Full Dataset R²:** {full_r2:.6f} ({full_r2*100:.4f}%)
+- **Target Achievement:** {'✅ Excellent (>99%)' if full_r2 > 0.99 else '⚠️ Good (>95%)' if full_r2 > 0.95 else '❌ Needs Improvement'}
+
+## 📊 Detailed Metrics
+| Metric | Train | Test | Full Dataset |
+|--------|-------|------|--------------|
+| **R² Score** | {training_metrics['train_r2']:.6f} | {training_metrics['test_r2']:.6f} | {full_r2:.6f} |
+| **MSE** | {training_metrics['train_mse']:.6f} | {training_metrics['test_mse']:.6f} | {full_mse:.6f} |
+| **MAE** | {training_metrics['train_mae']:.6f} | {training_metrics['test_mae']:.6f} | {full_mae:.6f} |
+
+## 🔍 Residual Analysis
+- **Mean Residual:** {validation_metrics['residual_mean']:.6f}
+- **Residual Std:** {validation_metrics['residual_std']:.6f}
+- **Max Absolute Error:** {validation_metrics['max_absolute_error']:.6f}
+
+## 🧠 Model Architecture
+- **Hidden Layers:** {training_metrics['hidden_layer_sizes']}
+- **Total Parameters:** {training_metrics['total_parameters']:,}
+- **Training Iterations:** {training_metrics['n_iterations']}
+- **Convergence:** {'✅ Yes' if training_metrics['convergence_achieved'] else '❌ No'}
+
+## 🎯 Prediction Quality
+The model shows {'excellent' if full_r2 > 0.99 else 'good' if full_r2 > 0.95 else 'moderate'} predictive performance with an R² score of {full_r2:.4f}.
+"""
+    
+    validation_deck.append(MarkdownRenderer().to_html(validation_summary))
+    validation_deck.append(ResponsiveImageRenderer().to_html(image_src=FlyteFile(path=validation_plot_path)))
+    
+    plt.close()
+    
     # Create enhanced validation report
-    report_path = "./tmp/validation_report.txt"
+    report_path = os.path.join(current_context().working_directory, "validation_report.txt")
     with open(report_path, 'w') as f:
         f.write("🚀 ADVANCED MLP Model Validation Report\n")
         f.write("=" * 60 + "\n\n")
@@ -500,7 +671,7 @@ def validate_model(
         f.write(f"   Feature Engineering: {training_metrics['feature_engineering']}\n")
         f.write(f"   Convergence: {training_metrics['convergence_achieved']}\n")
     
-    return FlyteFile(report_path), validation_metrics
+    return FlyteFile(path=report_path), validation_metrics
 
 
 @workflow
@@ -626,7 +797,7 @@ def mlp_training_workflow(
 def grid_search_objective(
     trial_number: int,
     data_file: FlyteFile,
-    metadata: Dict[str, Any],
+    metadata: DataMetadata,
     test_size: float = 0.2,
     random_state: int = 42,
     use_feature_engineering: bool = False,
@@ -867,7 +1038,7 @@ def analyze_grid_search_results(
             print(f"🎯 New best score: {best_score:.6f} with {hidden_layers}")
     
     # Save results
-    results_path = "./tmp/hyperparameter_search_results.json"
+    results_path = os.path.join(current_context().working_directory, "hyperparameter_search_results.json")
     with open(results_path, 'w') as f:
         json.dump({
             'best_params': best_params,
@@ -885,7 +1056,7 @@ def analyze_grid_search_results(
     print(f"   Alpha: {best_params['alpha']}")
     print(f"   Best R² Score: {best_score:.6f}")
     
-    return best_params, FlyteFile(results_path)
+    return best_params, FlyteFile(path=results_path)
 
 
 @workflow
@@ -1001,7 +1172,7 @@ def train_with_best_params_workflow(
     # Step 2: Train final model with best parameters
     model_file, metrics_file, training_metrics = train_mlp_model(
         data_file=data_file,
-        metadata={'a': a, 'b': b, 'c': c, 'x_min': x_min, 'x_max': x_max, 'error': error},
+        metadata=DataMetadata(a=a, b=b, c=c, x_min=x_min, x_max=x_max, error=error, num_points=(x_max-x_min+1), formula=f"y = {a}x^2 + {b}x + {c}"),
         hidden_layers=best_params['hidden_layers'],
         test_size=0.2,
         random_state=42,

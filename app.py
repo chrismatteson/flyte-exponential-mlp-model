@@ -16,8 +16,8 @@ def load_model_and_data():
     global model_data, training_data, metadata
     
     try:
-        # Load model (now includes scalers and settings)
-        model_path = "./tmp/mlp_model.joblib"
+        # Load model (now includes scalers and settings) 
+        model_path = "outputs/mlp_model.joblib"  # Updated path
         if os.path.exists(model_path):
             model_data = joblib.load(model_path)
             print(f"✅ Model data loaded from {model_path}")
@@ -29,7 +29,7 @@ def load_model_and_data():
             return False
         
         # Load training data
-        data_path = "./tmp/generated_data.csv"
+        data_path = "outputs/generated_data.csv"  # Updated path
         if os.path.exists(data_path):
             training_data = pd.read_csv(data_path)
             print(f"✅ Training data loaded from {data_path}")
@@ -38,7 +38,7 @@ def load_model_and_data():
             return False
         
         # Try to load metadata from metrics file
-        metrics_path = "./tmp/training_metrics.json"
+        metrics_path = "outputs/training_metrics.json"  # Updated path
         if os.path.exists(metrics_path):
             import json
             with open(metrics_path, 'r') as f:
@@ -294,8 +294,8 @@ with gr.Blocks(title="Advanced MLP Model Predictor") as demo:
             gr.Markdown("## Batch Prediction")
             batch_input = gr.Textbox(
                 label="Enter X values (comma-separated)", 
-                value="0, 1, 2, 3",
-                placeholder="e.g., 0, 1, 2, 3"
+                value="1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100",
+                placeholder="e.g., 1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100"
             )
             batch_btn = gr.Button("Batch Predict", variant="secondary")
             batch_result = gr.Textbox(label="Batch Predictions", lines=6)

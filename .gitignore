@@ -208,3 +208,6 @@ __marimo__/
 
 # Temp files
 tmp/*
+outputs/*
+# Keep outputs directory but ignore contents
+!outputs/.gitkeep
