@@ -28,7 +28,8 @@ Plus a separate Gradio app (`app.py`) for model inference.
 
 ```
 flyte-exponential-mlp-model/
-├── workflow.py              # Main Union AI workflow definition
+├── workflow.py              # Main Union AI workflow definition (with artifacts)
+├── gridsearchoptimize.py    # Hyperparameter optimization workflows
 ├── app.py                   # Gradio web application for inference
 ├── requirements.txt         # Python dependencies
 └── README.md              # This file
@@ -42,6 +43,8 @@ flyte-exponential-mlp-model/
 - **Comprehensive Validation**: MSE, R² scores, residual analysis
 - **Interactive Web Interface**: Gradio app for real-time predictions
 - **Union AI Integration**: Fully compatible with Union AI serverless platform
+- **Dual Deployment Support**: Works with both Union AI artifacts (serverless) and local files (development)
+- **Hyperparameter Optimization**: Grid search workflows for automated model tuning
 
 ## Quick Start with Union AI CLI
 
@@ -72,14 +75,40 @@ uv pip install -r requirements.txt
 ### 5. Run the Workflow
 
 ```bash
-union run workflow.py
+# For Union AI serverless (creates artifacts)
+union run workflow.py --save_local=False
+
+# For local development (saves files to outputs/)
+union run workflow.py --save_local=True
 ```
 
 ### 6. Deploy the Gradio App
 
 ```bash
-union deploy app.py
+# Deploy to Union AI serverless (consumes artifacts)
+union deploy apps union_app.py mlp-predictor
+
+# Or run locally (requires save_local=True)
+python app.py
 ```
+
+### Union.ai App Features
+
+The Union.ai app automatically:
+- Downloads model artifacts from your workflow runs
+- Loads the trained MLP model and associated data
+- Provides the same Gradio interface as local development
+- Scales automatically based on demand
+- Uses environment variables to locate model files
+
+### Artifact Integration
+
+The app is configured to use Union.ai artifacts:
+- **Model Artifact**: Contains the trained MLP model and scalers
+- **Data Artifact**: Contains the training dataset
+- **Metrics Artifact**: Contains training metrics and metadata
+
+These artifacts are automatically downloaded when the app starts and made available via environment variables.
 
 ## Workflow Parameters
 
@@ -138,6 +167,14 @@ Performs comprehensive validation:
 - Analyzes residuals
 - Generates detailed validation report
 
+### 5. Artifact Creation
+
+Creates Union AI artifacts for serverless deployment:
+
+- **ModelArtifact**: Contains trained model, scalers, and settings
+- **DataArtifact**: Contains training data and metadata  
+- **MetricsArtifact**: Contains training metrics and performance data
+
 ## Gradio App Features
 
 The `app.py` file provides a web interface with:
@@ -193,32 +230,38 @@ union delete app mlp-model-predictor
 ### Basic Workflow Run
 
 ```bash
-# Manual hyperparameter tuning
-union run workflow.py mlp_training_workflow
+# Manual hyperparameter tuning (Union AI serverless)
+union run workflow.py mlp_training_workflow --save_local=False
+
+# Manual hyperparameter tuning (local development)
+union run workflow.py mlp_training_workflow --save_local=True
 
 # Automatic hyperparameter grid search (50 trials)
-union run workflow.py hyperparameter_optimization_workflow --n_trials 50
+union run gridsearchoptimize.py hyperparameter_optimization_workflow --n_trials 50
 
 # Complete auto-ML: find best params + train final model
-union run workflow.py train_with_best_params_workflow --n_trials 30
+union run gridsearchoptimize.py train_with_best_params_workflow --n_trials 30
 ```
 
 ### Common ML Experimentation Patterns
 
 #### Architecture Experiments
 ```bash
-# Quick prototype - small network
-union run workflow.py mlp_training_workflow --hidden_layers '[50, 25]'
+# Quick prototype - small network (serverless)
+union run workflow.py mlp_training_workflow --hidden_layers '[50, 25]' --save_local=False
 
-# Standard deep network  
-union run workflow.py mlp_training_workflow --hidden_layers '[256, 128, 64, 32]'
+# Quick prototype - small network (local)
+union run workflow.py mlp_training_workflow --hidden_layers '[50, 25]' --save_local=True
 
-# Very deep network
-union run workflow.py mlp_training_workflow --hidden_layers '[512, 256, 128, 64, 32, 16]'
+# Standard deep network (serverless)
+union run workflow.py mlp_training_workflow --hidden_layers '[256, 128, 64, 32]' --save_local=False
 
-# Single layer experiments
-union run workflow.py mlp_training_workflow --hidden_layers '[100]'
-union run workflow.py mlp_training_workflow --hidden_layers '[50]'
+# Very deep network (serverless)
+union run workflow.py mlp_training_workflow --hidden_layers '[512, 256, 128, 64, 32, 16]' --save_local=False
+
+# Single layer experiments (serverless)
+union run workflow.py mlp_training_workflow --hidden_layers '[100]' --save_local=False
+union run workflow.py mlp_training_workflow --hidden_layers '[50]' --save_local=False
 ```
 
 #### Training Parameter Experiments (Real Performance Drivers)
@@ -276,22 +319,22 @@ union run workflow.py mlp_training_workflow --use_feature_engineering false --hi
 #### Grid Search Hyperparameter Experiments
 ```bash
 # Quick grid search (10 trials)
-union run workflow.py hyperparameter_optimization_workflow --n_trials 10
+union run gridsearchoptimize.py hyperparameter_optimization_workflow --n_trials 10
 
 # Thorough grid search (100 trials)  
-union run workflow.py hyperparameter_optimization_workflow --n_trials 100
+union run gridsearchoptimize.py hyperparameter_optimization_workflow --n_trials 100
 
 # Grid search with feature engineering
-union run workflow.py hyperparameter_optimization_workflow --n_trials 50 --use_feature_engineering true
+union run gridsearchoptimize.py hyperparameter_optimization_workflow --n_trials 50 --use_feature_engineering true
 
 # Grid search with different data
-union run workflow.py hyperparameter_optimization_workflow \
+union run gridsearchoptimize.py hyperparameter_optimization_workflow \
   --n_trials 30 \
   --a 2.0 --b -5.0 --c 10.0 \
   --x_min 1 --x_max 20
 
 # Complete auto-ML pipeline
-union run workflow.py train_with_best_params_workflow \
+union run gridsearchoptimize.py train_with_best_params_workflow \
   --n_trials 20 \
   --a 1.5 --b -2.0 --c 3.0
 ```
@@ -299,7 +342,7 @@ union run workflow.py train_with_best_params_workflow \
 ### Custom Parameters
 
 ```bash
-# Easy architecture changes - modify in one place!
+# Easy architecture changes - modify in one place! (serverless)
 union run workflow.py mlp_training_workflow \
   --x_min -20 \
   --x_max 20 \
@@ -308,7 +351,20 @@ union run workflow.py mlp_training_workflow \
   --b -3.0 \
   --c 5.0 \
   --hidden_layers '[100, 50]' \
-  --test_size 0.3
+  --test_size 0.3 \
+  --save_local=False
+
+# Easy architecture changes - modify in one place! (local)
+union run workflow.py mlp_training_workflow \
+  --x_min -20 \
+  --x_max 20 \
+  --error 10.0 \
+  --a 2.0 \
+  --b -3.0 \
+  --c 5.0 \
+  --hidden_layers '[100, 50]' \
+  --test_size 0.3 \
+  --save_local=True
 
 # Try different architectures easily:
 # Small: --hidden_layers '[50, 25]'
@@ -352,11 +408,21 @@ Our custom grid search systematically tries different combinations by cycling th
 
 The workflow produces several outputs:
 
+### Union AI Serverless (Artifacts)
+1. **ModelArtifact**: Contains trained model, scalers, and settings
+2. **DataArtifact**: Contains training data and metadata
+3. **MetricsArtifact**: Contains training metrics and performance data
+
+### Local Development (Files)
 1. **Data File**: CSV containing generated x,y pairs
 2. **Visualization**: PNG image with multiple plots
 3. **Model File**: Joblib-serialized MLP model
 4. **Metrics File**: JSON with training metrics
 5. **Validation Report**: Text file with detailed analysis
+
+### File Locations
+- **Serverless**: Artifacts stored in Union AI cloud storage
+- **Local**: Files saved to `outputs/` directory when `save_local=True`
 
 ## Error Handling
 
